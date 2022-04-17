@@ -92,8 +92,8 @@ uint16_t incremental_internet_checksum(uint16_t old_checksum, uint16_t old_v, ui
     return old_checksum - ~old_v - new_v;
 }
 
-struct arp_entry *get_arp_entry(uint32_t ip, struct arp_entry *arp_table, int n) {
-    struct arp_entry *entry = NULL;
+ARPE *get_arp_entry(uint32_t ip, ARPE *arp_table, int n) {
+    ARPE *entry = NULL;
 
     int i;
 
@@ -106,10 +106,10 @@ struct arp_entry *get_arp_entry(uint32_t ip, struct arp_entry *arp_table, int n)
     return entry;
 }
 
-int validate_checksum(struct iphdr *ip_hdr) {
+int validate_checksum(iphdr *ip_hdr) {
 	uint32_t old_check = ip_hdr->check;
     ip_hdr->check = 0;
-    ip_hdr->check = ip_checksum((uint8_t *)ip_hdr, sizeof(struct iphdr));
+    ip_hdr->check = ip_checksum((uint8_t *)ip_hdr, sizeof(iphdr));
     
     if (old_check != ip_hdr->check) {
         return 0;
@@ -117,7 +117,7 @@ int validate_checksum(struct iphdr *ip_hdr) {
     return 1;
 }
 
-void get_entry_binary(struct route_table_entry *rtable, uint32_t ip, int low, int high, int* found){
+void get_entry_binary(RTE *rtable, uint32_t ip, int low, int high, int* found){
     if(high < low) return;
     int mid = (low + high) / 2;
     uint32_t prefix = ip & rtable[mid].mask;
@@ -128,8 +128,8 @@ void get_entry_binary(struct route_table_entry *rtable, uint32_t ip, int low, in
     else get_entry_binary(rtable, ip, low, mid - 1, found);
 }
 
-struct route_table_entry get_entry(struct route_table_entry *rtable, int nr, uint32_t ip) {
-    struct route_table_entry ret;
+RTE get_entry(RTE *rtable, int nr, uint32_t ip) {
+    RTE ret;
     ret.mask = 0;
     int res = -1;
     get_entry_binary(rtable, ip, 0, nr - 1, &res);
@@ -137,17 +137,17 @@ struct route_table_entry get_entry(struct route_table_entry *rtable, int nr, uin
 	return ret;
 }
 
-int trimite_mai_departe(packet *m, struct route_table_entry *rtable, int n, struct arp_entry *arp_table, int narp, 
-	struct ether_header *eth_hdr, struct iphdr *ip_hdr) {
+int trimite_mai_departe(packet *m, RTE *rtable, int n, ARPE *arp_table, int narp, 
+	ethhdr *eth_hdr, iphdr *ip_hdr) {
 	// Longest prefix match
-	struct route_table_entry entry = get_entry(rtable, n, ip_hdr->daddr);
+	RTE entry = get_entry(rtable, n, ip_hdr->daddr);
 
 	if (entry.mask == 0) {
 		return 0;
 	}
 
 	// Se cauta in arp cache mac-ul pentru next hop
-	struct arp_entry *arp_entry = get_arp_entry(entry.next_hop, arp_table, narp);
+	ARPE *arp_entry = get_arp_entry(entry.next_hop, arp_table, narp);
 
 	if (arp_entry == NULL) {
 		return -1;
@@ -168,23 +168,23 @@ int trimite_mai_departe(packet *m, struct route_table_entry *rtable, int n, stru
 	return 1;
 }
 
-void send_icmp(int interface, struct ether_header * eth_hdr, 
-                struct iphdr * ip_hdr, struct route_table_entry * rtable, 
-                int nr, struct arp_entry * arptable, int na, 
+void send_icmp(int interface, ethhdr * eth_hdr, 
+                iphdr * ip_hdr, RTE * rtable, 
+                int nr, ARPE * arptable, int na, 
                 uint8_t type, uint8_t code){
     packet aux;
     aux.interface = interface;
 
     // Setez pointeri
-    struct ether_header *aux_eth = (struct ether_header *)aux.payload;
-    struct iphdr *aux_ip = (struct iphdr *)(aux.payload 
-                            + sizeof(struct ether_header));
-    struct icmphdr *aux_icmp = (struct icmphdr *)(aux.payload 
-                                + sizeof(struct iphdr) 
-                                + sizeof(struct ether_header));
+    ethhdr *aux_eth = (ethhdr *)aux.payload;
+    iphdr *aux_ip = (iphdr *)(aux.payload 
+                            + sizeof(ethhdr));
+    icmphdr *aux_icmp = (icmphdr *)(aux.payload 
+                                + sizeof(iphdr) 
+                                + sizeof(ethhdr));
 
     // Se completeaza header ip
-    memcpy(aux_ip, ip_hdr, sizeof(struct iphdr));
+    memcpy(aux_ip, ip_hdr, sizeof(iphdr));
     uint16_t daddr = aux_ip->daddr;
     aux_ip->daddr = ip_hdr->saddr;
     aux_ip->saddr = daddr;
@@ -192,9 +192,9 @@ void send_icmp(int interface, struct ether_header * eth_hdr,
     aux_ip->ttl = 64;
     aux_ip->version = 4;
     aux_ip->protocol = 1;
-    aux_ip->tot_len = htons(sizeof(struct icmphdr) + sizeof(struct iphdr));
+    aux_ip->tot_len = htons(sizeof(icmphdr) + sizeof(iphdr));
     aux_ip->check = 0;
-    aux_ip->check = ip_checksum((uint8_t *)aux_ip, sizeof(struct iphdr));
+    aux_ip->check = ip_checksum((uint8_t *)aux_ip, sizeof(iphdr));
     
     // Se completeaza header ICMP
     aux_icmp->type = type;
@@ -202,26 +202,26 @@ void send_icmp(int interface, struct ether_header * eth_hdr,
     aux_icmp->un.echo.sequence = 0;
     aux_icmp->un.echo.id = 0;
     aux_icmp->checksum = 0;
-    aux_icmp->checksum = icmp_checksum((uint16_t *)aux_icmp, sizeof(struct icmphdr));
+    aux_icmp->checksum = icmp_checksum((uint16_t *)aux_icmp, sizeof(icmphdr));
 
     // Scriu adresele MAC in ether header
     aux_eth->ether_type = htons(ETHERTYPE_IP);
     memcpy(aux_eth->ether_shost, eth_hdr->ether_dhost, 6);
     memcpy(aux_eth->ether_dhost, eth_hdr->ether_shost, 6);
-    aux.len = sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct icmphdr);
+    aux.len = sizeof(ethhdr) + sizeof(iphdr) + sizeof(icmphdr);
     // Se trimite packetul
     send_packet(&aux);
 }
 
-void create_arp_request(packet * m, struct route_table_entry * entry){
+void create_arp_request(packet * m, RTE * entry){
     char *broad = "ff:ff:ff:ff:ff:ff";
 	char *tha = "00:00:00:00:00:00";
 
     m->interface = entry->interface;
-    m->len = sizeof(struct ether_header) + sizeof(struct arp_header);
+    m->len = sizeof(ethhdr) + sizeof(arphdr);
 
-    struct ether_header *eth_hdr = (struct ether_header *)m->payload;
-    struct arp_header *arp_hdr = (struct arp_header *)(m->payload + sizeof(struct ether_header));
+    ethhdr *eth_hdr = (ethhdr *)m->payload;
+    arphdr *arp_hdr = (arphdr *)(m->payload + sizeof(ethhdr));
 
     // Completez arp header
     arp_hdr->htype = htons(ARPHRD_ETHER);
@@ -248,7 +248,7 @@ void create_arp_request(packet * m, struct route_table_entry * entry){
     hwaddr_aton(broad, eth_hdr->ether_dhost);
 }
 
-void create_arp_reply(packet * m, struct ether_header * eth_hdr, struct arp_header * arp_hdr){
+void create_arp_reply(packet * m, ethhdr * eth_hdr, arphdr * arp_hdr){
     uint32_t spa = arp_hdr->spa;
     uint32_t tpa = arp_hdr->tpa;
     arp_hdr->tpa = spa;
@@ -260,28 +260,6 @@ void create_arp_reply(packet * m, struct ether_header * eth_hdr, struct arp_head
 
     memcpy(eth_hdr->ether_dhost, eth_hdr->ether_shost, sizeof(eth_hdr->ether_shost));
     memcpy(eth_hdr->ether_shost, arp_hdr->sha, sizeof(arp_hdr->sha));
-}
-
-
-/**
- * @brief Verificare daca packet pentru router
- * 
- * @param m packet
- * @return int 1 daca da si 0 cazs contrar
- */
-int verify_for_router(packet * m){
-	struct ether_header *eth_hdr = (struct ether_header *)m->payload;
-	uint8_t mac[6];
-	get_interface_mac(m->interface, mac);
-	for(int i = 0; i < 6; i++){
-		if(mac[i] != eth_hdr->ether_dhost[i]){
-			for(int j = 0; j < 6; j++){
-				if(eth_hdr->ether_dhost[j] != 0xff) return 0;
-			}
-			return 1;
-		}
-	}
-	return 1;
 }
 
 int main(int argc, char *argv[])
@@ -306,9 +284,23 @@ int main(int argc, char *argv[])
 		DIE_NEW(rc < 0, "Didn't receive packet");
 		
 		// Get ethernet header
-		ethhdr *eth_hdr = (ethhdr *)message.payload;
+		ethhdr *eth_hdr = (ethhdr *) message.payload;
 
-		if(verify_for_router(&message) == 0)
+		// Check if packet is for me
+		uint8_t mac[6];
+		bool for_me = TRUE;
+		get_interface_mac(message.interface, mac);
+		for(int i = 0; i < 6; ++i) {
+			if(mac[i] != eth_hdr->ether_dhost[i]) {
+				for(int j = 0; j < 6; ++j){
+					if(eth_hdr->ether_dhost[j] != 0xff) 
+						for_me = FALSE;
+				}
+			}
+		}
+
+		// Drop package
+		if(for_me == FALSE)
 			continue;
 
 		// Verificare daca e IP Header
