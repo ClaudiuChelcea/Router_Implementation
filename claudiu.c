@@ -61,16 +61,6 @@ typedef struct ARP_STRUCT {
 	int arp_table_len;
 } ARP_STRUCT;
 
-
-
-
-
-
-
-
-
-
-
 // Create and return the routing table
 RT_STRUCT get_rtable(char* argv_1) {
 	RT_STRUCT route_table = {NULL, 0};
@@ -85,6 +75,20 @@ ARP_STRUCT get_arptable() {
 	SAFE_ALLOC(&arp_table.arp_table, "calloc", MAX_ARP_CACHE, sizeof(ARPE));
 	return arp_table;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 uint16_t incremental_internet_checksum(uint16_t old_checksum, uint16_t old_v, uint16_t new_v){
     return old_checksum - ~old_v - new_v;
