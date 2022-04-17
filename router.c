@@ -37,8 +37,8 @@ if(strcmp(alloc_type, "malloc") == STRING_EQ) {											\
 	DIE_NEW(TRUE, "Couldn't allocate pointer due to unrecognized alloc type!");			\
 }																						\
 
-#define MAX_ENTRIES 1<<17
-#define MAX_ARP_CACHE 1<<7
+#define MAX_ENTRIES 1L<<17
+#define MAX_ARP_CACHE 1L	<<7
 
 typedef struct route_table_entry route_table_entry;
 typedef route_table_entry RTE;
@@ -168,33 +168,33 @@ int trimite_mai_departe(packet *m, RTE *rtable, int n, ARPE *arp_table, int narp
 	return 1;
 }
 
-void send_icmp(int interface, ethhdr * eth_hdr, 
-                iphdr * ip_hdr, RTE * rtable, 
-                int nr, ARPE * arptable, int na, 
-                uint8_t type, uint8_t code){
-    packet aux;
-    aux.interface = interface;
+void send_icmp(int interface, ethhdr * eth_hdr, iphdr * ip_hdr,
+                uint8_t type, uint8_t code)
+{
+	// Create packet
+    packet icmp_packet;
+    icmp_packet.interface = interface;
 
     // Setez pointeri
-    ethhdr *aux_eth = (ethhdr *)aux.payload;
-    iphdr *aux_ip = (iphdr *)(aux.payload 
+    ethhdr *aux_eth = (ethhdr *)icmp_packet.payload;
+    iphdr *icmp_packet_ip = (iphdr *)(icmp_packet.payload 
                             + sizeof(ethhdr));
-    icmphdr *aux_icmp = (icmphdr *)(aux.payload 
+    icmphdr *aux_icmp = (icmphdr *)(icmp_packet.payload 
                                 + sizeof(iphdr) 
                                 + sizeof(ethhdr));
 
     // Se completeaza header ip
-    memcpy(aux_ip, ip_hdr, sizeof(iphdr));
-    uint16_t daddr = aux_ip->daddr;
-    aux_ip->daddr = ip_hdr->saddr;
-    aux_ip->saddr = daddr;
-    aux_ip->id = 0;
-    aux_ip->ttl = 64;
-    aux_ip->version = 4;
-    aux_ip->protocol = 1;
-    aux_ip->tot_len = htons(sizeof(icmphdr) + sizeof(iphdr));
-    aux_ip->check = 0;
-    aux_ip->check = ip_checksum((uint8_t *)aux_ip, sizeof(iphdr));
+    memcpy(icmp_packet_ip, ip_hdr, sizeof(iphdr));
+    uint16_t daddr = icmp_packet_ip->daddr;
+    icmp_packet_ip->daddr = ip_hdr->saddr;
+    icmp_packet_ip->saddr = daddr;
+    icmp_packet_ip->id = 0;
+    icmp_packet_ip->ttl = 64;
+    icmp_packet_ip->version = 4;
+    icmp_packet_ip->protocol = 1;
+    icmp_packet_ip->tot_len = htons(sizeof(icmphdr) + sizeof(iphdr));
+    icmp_packet_ip->check = 0;
+    icmp_packet_ip->check = ip_checksum((uint8_t *)icmp_packet_ip, sizeof(iphdr));
     
     // Se completeaza header ICMP
     aux_icmp->type = type;
@@ -208,9 +208,10 @@ void send_icmp(int interface, ethhdr * eth_hdr,
     aux_eth->ether_type = htons(ETHERTYPE_IP);
     memcpy(aux_eth->ether_shost, eth_hdr->ether_dhost, 6);
     memcpy(aux_eth->ether_dhost, eth_hdr->ether_shost, 6);
-    aux.len = sizeof(ethhdr) + sizeof(iphdr) + sizeof(icmphdr);
+    icmp_packet.len = sizeof(ethhdr) + sizeof(iphdr) + sizeof(icmphdr);
+
     // Se trimite packetul
-    send_packet(&aux);
+    send_packet(&icmp_packet);
 }
 
 void create_arp_request(packet * m, RTE * entry){
@@ -307,22 +308,24 @@ int main(int argc, char *argv[])
 		if(for_me == FALSE)
 			continue;
 
-
 		// Verificare IP Header / ARP Header
 		switch(ntohs(eth_hdr->ether_type)) {
 			// IP
 			case ETHERTYPE_IP:
-				// Verific TTL
+				// Get header
 				ip_hdr = (iphdr*)(message.payload + sizeof(ethhdr));
-				if (ip_hdr->ttl <= 1) {
-					// ICMP TTL Exceeded
-					send_icmp(message.interface, eth_hdr, ip_hdr, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, ICMP_TIME_EXCEEDED, ICMP_EXC_TTL);
+				DIE_NEW(!ip_hdr, "Couldn't get IP header!");
+
+				// Validations
+				if (validate_checksum(ip_hdr) == FALSE) {
 					continue;
 				}
-				// Validare Checksum
-				if (!validate_checksum(ip_hdr)) {
+
+				if (ip_hdr->ttl -1 <= 0) {
+					send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_TIME_EXCEEDED, ICMP_EXC_TTL);
 					continue;
 				}
+				
 				// Verificare daca destinatia din IP Header e routerul asta
 				// Si daca IP Protocol e 1 -> ICMP atunci e pentru router
 				if (ip_hdr->protocol == 1 && inet_addr(get_interface_ip(message.interface)) == ip_hdr->daddr) {
@@ -332,7 +335,7 @@ int main(int argc, char *argv[])
 					// Daca e echo request
 					if (icmp_hdr->type == ICMP_ECHO) {
 						// Trimit echo reply
-						send_icmp(message.interface, eth_hdr, ip_hdr, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, ICMP_ECHOREPLY, 0);
+						send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_ECHOREPLY, 0);
 						continue;
 					}
 				}
@@ -343,7 +346,7 @@ int main(int argc, char *argv[])
 					// Daca forward a esuat cu codul 0 -> trimit ICMP Destination unreachable
 					if (code == 0) {
 						// Completarea header si trimitere ICMP
-						send_icmp(message.interface, eth_hdr, ip_hdr, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
+						send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
 						continue;
 					}
 					// Daca forward a esuat cu -1 -> salvez pachetul in coada si creez un ARP Request
