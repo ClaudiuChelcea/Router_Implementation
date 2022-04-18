@@ -38,8 +38,8 @@ typedef enum {
         DIE_NEW(TRUE, "Couldn't allocate pointer due to unrecognized alloc type!"); \
     }
 
-#define MAX_ENTRIES 1 << 17
-#define MAX_ARP_CACHE 1 << 7
+#define MAX_ENTRIES (1 << 17)
+#define MAX_ARP_CACHE (1 << 7)
 #define MAC_LEN 6
 
 typedef struct route_table_entry route_table_entry;
@@ -207,8 +207,8 @@ static inline void send_icmp(int interface, ethhdr* eth_hdr, iphdr* ip_hdr,
     uint8_t type, uint8_t code)
 {
 	// Check receiving headers correctly
-	DIE(!eth_hdr, "DIDN'T RECEIVE ETH_HEADER CORRECTLY. Can't send ICMP!");
-	DIE(!ip_hdr, "DIDN'T RECEIVE IP_HEADER CORRECTLY. Can't send ICMP!");
+	DIE_NEW(!eth_hdr, "DIDN'T RECEIVE ETH_HEADER CORRECTLY. Can't send ICMP!");
+	DIE_NEW(!ip_hdr, "DIDN'T RECEIVE IP_HEADER CORRECTLY. Can't send ICMP!");
 
     // Create packet
     packet icmp_packet;
@@ -218,7 +218,7 @@ static inline void send_icmp(int interface, ethhdr* eth_hdr, iphdr* ip_hdr,
     ethhdr* aux_eth = (ethhdr*)icmp_packet.payload;
     iphdr* icmp_packet_ip = (iphdr*)(icmp_packet.payload + sizeof(*aux_eth));
     icmphdr* aux_icmp = (icmphdr*)(icmp_packet.payload + sizeof(*icmp_packet_ip) + sizeof(*aux_eth));
-    DIE(!aux_eth || !icmp_packet_ip || !aux_icmp, "ICMP SEND ERROR!");
+    DIE_NEW(!aux_eth || !icmp_packet_ip || !aux_icmp, "ICMP SEND ERROR!");
 
 	// Complete ICMP header
     aux_icmp->type = type;
@@ -258,9 +258,9 @@ static inline void create_arp_request(packet* message, RTE* entry)
 
 	// Get headers from message and complete them
     ethhdr* eth_hdr = (ethhdr*)message->payload;
-	DIE(!eth_hdr, "Couldn't get ETHERNET HEADER!");
+	DIE_NEW(!eth_hdr, "Couldn't get ETHERNET HEADER!");
     arphdr* arp_hdr = (arphdr*)(message->payload + sizeof(ethhdr));
-    DIE(!arp_hdr, "Couldn't get ARP HEADER!");
+    DIE_NEW(!arp_hdr, "Couldn't get ARP HEADER!");
 	arp_hdr->htype = htons(ARPHRD_ETHER);
     arp_hdr->ptype = htons(1<<11);
     arp_hdr->hlen = 6;
@@ -374,7 +374,7 @@ int main(int argc, char* argv[])
 
                 // Get ICMP header
                 icmp_hdr = (icmphdr*)(message.payload + sizeof(ethhdr) + sizeof(iphdr));
-                DIE(!icmp_hdr, "Coulnd't get ICMP header!");
+                DIE_NEW(!icmp_hdr, "Coulnd't get ICMP header!");
                 if (icmp_hdr->type == ICMP_ECHO) {
                     send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_ECHOREPLY, 0);
                     continue;
@@ -385,7 +385,7 @@ int main(int argc, char* argv[])
                     send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
                 } else if (forward_ans == FAILURE) { // Save it to queue
                     SAFE_ALLOC(&tmp, "calloc", 1, sizeof(packet));
-                    DIE(!tmp, "Couldn't queue packet!");
+                    DIE_NEW(!tmp, "Couldn't queue packet!");
 
                     memcpy(tmp, &message, sizeof(packet));
                     queue_enq(my_queue, tmp);
@@ -405,7 +405,7 @@ int main(int argc, char* argv[])
         case ETHERTYPE_ARP:
             // Get header
             arp_hdr = (arphdr*)(message.payload + sizeof(ethhdr));
-            DIE(!arp_hdr, "Couldn't get arp header!");
+            DIE_NEW(!arp_hdr, "Couldn't get arp header!");
 
             // Save in cache
             arp_table.arp_table[arp_table.arp_table_len].ip = arp_hdr->spa;
@@ -424,21 +424,21 @@ int main(int argc, char* argv[])
             case ARPOP_REPLY:
                 // Create queue of packets
                 tmp_queue = queue_create();
-                DIE(!tmp_queue, "Couldn't create auxiliary queue!");
+                DIE_NEW(!tmp_queue, "Couldn't create auxiliary queue!");
 
                 // Get packets
                 while (queue_empty(my_queue) == FALSE) {
                     // Get packet
                     waiting_packet = (packet*)queue_deq(my_queue);
-                    DIE(!waiting_packet, "Couldn't get waiting packet!");
+                    DIE_NEW(!waiting_packet, "Couldn't get waiting packet!");
 
                     // Get ethernet header
                     waiting_ethhdr = (ethhdr*)waiting_packet->payload;
-                    DIE(!waiting_ethhdr, "Couldn't get ethernet header of waiting packet!");
+                    DIE_NEW(!waiting_ethhdr, "Couldn't get ethernet header of waiting packet!");
 
                     // Get IP header
                     waiting_iphdr = (iphdr*)(waiting_packet->payload + sizeof(ethhdr));
-                    DIE(!waiting_iphdr, "Couldn't get IP header of waiting packet!");
+                    DIE_NEW(!waiting_iphdr, "Couldn't get IP header of waiting packet!");
 
                     if (get_best_route_rtable(route_table, waiting_iphdr->daddr).next_hop == arp_hdr->spa) {
                         forward(waiting_packet, waiting_ethhdr, waiting_iphdr, route_table, arp_table);
@@ -452,13 +452,13 @@ int main(int argc, char* argv[])
                 break;
 
             default:
-                DIE(TRUE, "Not request nor reply!");
+                DIE_NEW(TRUE, "Not request nor reply!");
                 break;
             }
             break;
 
         default:
-            DIE(TRUE, "HEADER UNRECOGNIZED! ONLY IP AND ARP IMPLEMENTED!");
+            DIE_NEW(TRUE, "HEADER UNRECOGNIZED! ONLY IP AND ARP IMPLEMENTED!");
             break;
         }
     } while (TRUE);
