@@ -16,7 +16,7 @@ typedef enum {
 
 // Verify condition
 #define DIE_NEW(assertion, message)                                                 \
-    if (assertion == TRUE) {                                                        \
+    if (assertion) {                                                                \
         fprintf(stderr, "Error at line %d in file %s!\n", __LINE__, __FILE__);      \
         perror(message);                                                            \
         exit(errno);                                                                \
@@ -110,19 +110,19 @@ static inline int is_checksum_correct(iphdr* ip_hdr)
 static inline void get_rt_ip_index(RT_STRUCT rtable, uint32_t ip, int low, int high, int* index)
 {
     // Stop condition
-    if (high < low) {
+    if(high < low) {
         return;
-    } else { // Loop
-        int mid = (low + high) / 2;
-        uint32_t prefix = ip & rtable.rtable[mid].mask;
-        if (prefix == rtable.rtable[mid].prefix) {
-            (*index) = mid;
+    } else {
+        int middle = (low + high) / 2;
+        uint32_t prefix = ip & rtable.rtable[middle].mask;
+        if(prefix == rtable.rtable[middle].prefix) {
+            (*index) = middle;
         }
-
-        if (rtable.rtable[mid].prefix > prefix) {
-            get_rt_ip_index(rtable, ip, mid + 1, high, index);
+        
+        if(rtable.rtable[middle].prefix > prefix) {
+            get_rt_ip_index(rtable, ip, middle + 1, high, index);
         } else {
-            get_rt_ip_index(rtable, ip, low, mid - 1, index);
+            get_rt_ip_index(rtable, ip, low, middle - 1, index);
         }
     }
 }
@@ -147,7 +147,7 @@ static inline RTE get_best_route_rtable(RT_STRUCT rtable, uint32_t ip)
     route.mask = 0;
 
     // Index of route in the rtable
-    int index = 0;
+    int index = -1;
 
     // Find route
     get_rt_ip_index(rtable, ip, 0, rtable.rtable_len - 1, &index);
@@ -314,9 +314,7 @@ int main(int argc, char* argv[])
     iphdr* waiting_iphdr = NULL;
     packet* tmp = NULL;
     packet* waiting_packet = NULL;
-    waiting_iphdr;
     ethhdr* waiting_ethhdr = NULL;
-    RTE* entry = NULL;
     RTE arp_entry;
     queue tmp_queue;
     packet packet_arp_request;
