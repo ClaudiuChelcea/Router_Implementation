@@ -76,7 +76,7 @@ static inline int cmp_fct_sort(const void *a, const void *b) {
 }
 
 // Create and return the routing table
-RT_STRUCT get_rtable(char* argv_1) {
+static inline RT_STRUCT get_rtable(char* argv_1) {
 	RT_STRUCT route_table = {NULL, 0};
 	SAFE_ALLOC(&route_table.rtable, "calloc", MAX_ENTRIES, sizeof(RTE));
 	route_table.rtable_len = read_rtable(argv_1, route_table.rtable);
@@ -84,17 +84,13 @@ RT_STRUCT get_rtable(char* argv_1) {
 }
 
 // Create and return the ARP table
-ARP_STRUCT get_arptable() {
+static inline ARP_STRUCT get_arptable() {
 	ARP_STRUCT arp_table = {NULL, 0};
 	SAFE_ALLOC(&arp_table.arp_table, "calloc", MAX_ARP_CACHE, sizeof(ARPE));
 	return arp_table;
 }
 
-uint16_t incremental_internet_checksum(uint16_t old_checksum, uint16_t old_v, uint16_t new_v){
-    return old_checksum - ~old_v - new_v;
-}
-
-ARPE *get_arp_entry(uint32_t ip, ARPE *arp_table, int n) {
+static inline ARPE *get_arp_entry(uint32_t ip, ARPE *arp_table, int n) {
     ARPE *entry = NULL;
 
     int i;
@@ -108,7 +104,7 @@ ARPE *get_arp_entry(uint32_t ip, ARPE *arp_table, int n) {
     return entry;
 }
 
-int validate_checksum(iphdr *ip_hdr) {
+static inline int validate_checksum(iphdr *ip_hdr) {
 	uint32_t old_check = ip_hdr->check;
     ip_hdr->check = 0;
     ip_hdr->check = ip_checksum((uint8_t *)ip_hdr, sizeof(iphdr));
@@ -119,7 +115,7 @@ int validate_checksum(iphdr *ip_hdr) {
     return 1;
 }
 
-void get_entry_binary(RTE *rtable, uint32_t ip, int low, int high, int* found){
+static inline void get_entry_binary(RTE *rtable, uint32_t ip, int low, int high, int* found){
     if(high < low) return;
     int mid = (low + high) / 2;
     uint32_t prefix = ip & rtable[mid].mask;
@@ -130,44 +126,13 @@ void get_entry_binary(RTE *rtable, uint32_t ip, int low, int high, int* found){
     else get_entry_binary(rtable, ip, low, mid - 1, found);
 }
 
-RTE get_entry(RTE *rtable, int nr, uint32_t ip) {
+static inline RTE get_entry(RTE *rtable, int nr, uint32_t ip) {
     RTE ret;
     ret.mask = 0;
     int res = -1;
     get_entry_binary(rtable, ip, 0, nr - 1, &res);
     if(res != -1) ret = rtable[res];
 	return ret;
-}
-
-int trimite_mai_departe(packet *m, RTE *rtable, int n, ARPE *arp_table, int narp, 
-	ethhdr *eth_hdr, iphdr *ip_hdr) {
-	// Longest prefix match
-	RTE entry = get_entry(rtable, n, ip_hdr->daddr);
-
-	if (entry.mask == 0) {
-		return 0;
-	}
-
-	// Se cauta in arp cache mac-ul pentru next hop
-	ARPE *arp_entry = get_arp_entry(entry.next_hop, arp_table, narp);
-
-	if (arp_entry == NULL) {
-		return -1;
-	}
-
-	// rescrierea adrese din ethernet header
-    memcpy(eth_hdr->ether_dhost, arp_entry->mac, ETH_ALEN);
-	get_interface_mac(entry.interface, eth_hdr->ether_shost);
-
-	// update la ttl si la checksum
-	ip_hdr->ttl--;
-	ip_hdr->check = incremental_internet_checksum(ip_hdr->check, ip_hdr->ttl, ip_hdr->ttl);
-
-	// trimiterea packetului
-	m->interface = entry.interface;
-	send_packet(m);
-
-	return 1;
 }
 
 // Get best route for arp table
@@ -189,7 +154,7 @@ static inline int forward(packet *message, ethhdr *eth_hdr, iphdr *ip_hdr, RT_ST
 	RTE entry = get_entry(rtable.rtable, rtable.rtable_len, ip_hdr->daddr);
 
 	if (entry.mask == 0) {
-		return FAILURE;
+		return FALSE;
 	} else {
 		message->interface = entry.interface;
 	}
@@ -258,7 +223,7 @@ static inline void send_icmp(int interface, ethhdr * eth_hdr, iphdr * ip_hdr,
     send_packet(&icmp_packet);
 }
 
-void create_arp_request(packet * m, RTE * entry){
+static inline void create_arp_request(packet * m, RTE * entry){
     char *broad = "ff:ff:ff:ff:ff:ff";
 	char *tha = "00:00:00:00:00:00";
 
@@ -293,7 +258,7 @@ void create_arp_request(packet * m, RTE * entry){
     hwaddr_aton(broad, eth_hdr->ether_dhost);
 }
 
-void create_arp_reply(packet * m, ethhdr * eth_hdr, arphdr * arp_hdr){
+static inline void create_arp_reply(packet * m, ethhdr * eth_hdr, arphdr * arp_hdr){
     uint32_t spa = arp_hdr->spa;
     uint32_t tpa = arp_hdr->tpa;
     arp_hdr->tpa = spa;
@@ -391,7 +356,7 @@ int main(int argc, char *argv[])
 						continue;
 					}
 				} else {
-					int forward_ans = trimite_mai_departe(&message, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr, ip_hdr);
+					int forward_ans = forward(&message, eth_hdr, ip_hdr, route_table, arp_table);
 					if (forward_ans == FALSE) {
 						send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
 					} else if(forward_ans == FAILURE) { // Save it to queue
