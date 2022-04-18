@@ -328,6 +328,7 @@ int main(int argc, char *argv[])
 	waiting_iphdr;
 	ethhdr* waiting_ethhdr = NULL;
 	RTE* entry = NULL;
+	RTE arp_entry;
 	queue tmp_queue;
 	packet packet_arp_request;
 
@@ -390,27 +391,25 @@ int main(int argc, char *argv[])
 						continue;
 					}
 				} else {
-					int code = trimite_mai_departe(&message, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr, ip_hdr);
-
-					// Daca forward a esuat cu codul 0 -> trimit ICMP Destination unreachable
-					if (code == 0) {
-						// Completarea header si trimitere ICMP
+					int forward_ans = trimite_mai_departe(&message, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr, ip_hdr);
+					if (forward_ans == FALSE) {
 						send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
 						continue;
-					}
-					// Daca forward a esuat cu -1 -> salvez pachetul in coada si creez un ARP Request
-					else if (code == -1) {
-						// Adaug packetul in coada
-						packet *aux = (packet *)calloc(1, sizeof(packet));
-						memcpy(aux, &message, sizeof(packet));
-						queue_enq(my_queue, aux);
-						// Generez arp request
-						RTE entry = get_entry(route_table.rtable, route_table.rtable_len, ip_hdr->daddr);
-						packet p;
-						create_arp_request(&p, &entry);
-						send_packet(&p);
+					} else if(forward_ans == FAILURE) { // Save it to queue
+						SAFE_ALLOC(&tmp, "calloc", 1, sizeof(packet));
+						DIE(!tmp, "Couldn't queue packet!");
+
+						memcpy(tmp, &message, sizeof(packet));
+						queue_enq(my_queue, tmp);
+						
+						// Create ARP request
+						arp_entry = get_entry(route_table.rtable, route_table.rtable_len, ip_hdr->daddr);
+						create_arp_request(&packet_arp_request, &arp_entry);
+						send_packet(&packet_arp_request);
 						continue;
 					}
+					
+					// In the end, continue
 					continue;
 				}
 				break;
