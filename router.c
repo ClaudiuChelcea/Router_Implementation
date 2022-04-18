@@ -90,49 +90,76 @@ static inline ARP_STRUCT get_arptable() {
 	return arp_table;
 }
 
-static inline ARPE *get_arp_entry(uint32_t ip, ARPE *arp_table, int n) {
-    ARPE *entry = NULL;
-
-    int i;
-
-    for (i = 0; i < n; i++) {
-    	if (arp_table[i].ip == ip) {
-            entry = &arp_table[i];
-            break;
-        }
-    }
-    return entry;
+// Check if the packet is received correctly using checksum
+static inline int is_checksum_correct(iphdr *ip_hdr) {
+	int ip_hdr_check = ip_hdr->check;
+	ip_hdr->check = 0;
+    ip_hdr->check = ip_checksum((uint8_t *)ip_hdr, sizeof(struct iphdr));
+	if(ip_hdr->check == ip_hdr_check)
+		return TRUE;
+	return FALSE;
 }
 
-static inline int validate_checksum(iphdr *ip_hdr) {
-	uint32_t old_check = ip_hdr->check;
-    ip_hdr->check = 0;
-    ip_hdr->check = ip_checksum((uint8_t *)ip_hdr, sizeof(iphdr));
-    
-    if (old_check != ip_hdr->check) {
-        return 0;
-    }
-    return 1;
-}
+// Get the index of the ip in the route_table
+static inline void get_rt_ip_index(RT_STRUCT rtable, uint32_t ip, int low, int high, int* index)
+{
+//     if(high < low)
+// 		return;
+	
+// 	// Find prefix
+//     uint32_t prefix = ip & rtable.rtable[(low + high) / 2].mask;
+	
+// 	// If it is the value that we want
+//     if(prefix == rtable.rtable[(low + high) / 2].prefix) {
+//         (*index) = (low + high) / 2;
+// 		return;
+//     } else if(prefix > rtable.rtable[(low + high) / 2].prefix) {
+// 		get_rt_ip_index(rtable, ip, low, (low + high) / 2 - 1, index);
+// 	} else {
+// 		get_rt_ip_index(rtable, ip, (low + high) / 2 + 1, high, index);
+// 	} 
 
-static inline void get_entry_binary(RTE *rtable, uint32_t ip, int low, int high, int* found){
-    if(high < low) return;
+	if(high < low) return;
     int mid = (low + high) / 2;
-    uint32_t prefix = ip & rtable[mid].mask;
-    if(prefix == rtable[mid].prefix) {
-        (*found) = mid;
+    uint32_t prefix = ip & rtable.rtable[mid].mask;
+    if(prefix == rtable.rtable[mid].prefix) {
+        (*index) = mid;
     }
-    if(rtable[mid].prefix > prefix) get_entry_binary(rtable, ip, mid + 1, high, found);
-    else get_entry_binary(rtable, ip, low, mid - 1, found);
+    if(rtable.rtable[mid].prefix > prefix) get_rt_ip_index(rtable, ip, mid + 1, high, index);
+    else get_rt_ip_index(rtable, ip, low, mid - 1, index);
 }
 
-static inline RTE get_entry(RTE *rtable, int nr, uint32_t ip) {
-    RTE ret;
-    ret.mask = 0;
-    int res = -1;
-    get_entry_binary(rtable, ip, 0, nr - 1, &res);
-    if(res != -1) ret = rtable[res];
-	return ret;
+// Return the biggest set bite position
+static inline int biggest_bit_index(int n) {
+    int cnt = 0;
+    while(n) {
+        ++cnt;
+        n>>= 1;
+    }
+    
+    return cnt;
+}
+
+// Get best entry in rtable with binary search
+static inline RTE get_best_route_rtable(RT_STRUCT rtable, uint32_t ip)
+{
+    // Create default route
+	RTE route;
+	route.mask = 0;
+
+	// Index of route in the rtable
+	int index = 0;
+	
+	// Find route
+	get_rt_ip_index(rtable, ip, 0, rtable.rtable_len - 1, &index);
+
+	// Return rtable entry
+    if(index == -1) {
+		return route;
+	} else {
+		route = rtable.rtable[index];
+		return route;
+	}
 }
 
 // Get best route for arp table
@@ -151,7 +178,7 @@ static inline ARPE *get_best_route_arp(uint32_t ip, ARP_STRUCT arp_table)
 // Forward package
 static inline int forward(packet *message, ethhdr *eth_hdr, iphdr *ip_hdr, RT_STRUCT rtable, ARP_STRUCT arp_table)
 {
-	RTE entry = get_entry(rtable.rtable, rtable.rtable_len, ip_hdr->daddr);
+	RTE entry = get_best_route_rtable(rtable, ip_hdr->daddr);
 
 	if (entry.mask == 0) {
 		return FALSE;
@@ -311,7 +338,7 @@ int main(int argc, char *argv[])
 		ethhdr *eth_hdr = (ethhdr *) message.payload;
 
 		// Check if packet is for me
-		uint8_t mac[6];
+		uint8_t mac[MAC_LEN];
 		bool for_me = TRUE;
 		get_interface_mac(message.interface, mac);
 		for(int i = 0; i < 6; ++i) {
@@ -332,11 +359,11 @@ int main(int argc, char *argv[])
 			// IP
 			case ETHERTYPE_IP:
 				// Get header
-				ip_hdr = (iphdr*)(message.payload + sizeof(ethhdr));
+				ip_hdr = (iphdr*) (message.payload + sizeof(ethhdr));
 				DIE_NEW(!ip_hdr, "Couldn't get IP header!");
 
 				// Validations
-				if (validate_checksum(ip_hdr) == FALSE) {
+				if (is_checksum_correct(ip_hdr) == FALSE) {
 					continue;
 				}
 
@@ -367,7 +394,7 @@ int main(int argc, char *argv[])
 						queue_enq(my_queue, tmp);
 						
 						// Create ARP request
-						arp_entry = get_entry(route_table.rtable, route_table.rtable_len, ip_hdr->daddr);
+						arp_entry = get_best_route_rtable(route_table, ip_hdr->daddr);
 						create_arp_request(&packet_arp_request, &arp_entry);
 						send_packet(&packet_arp_request);
 					}
@@ -416,7 +443,7 @@ int main(int argc, char *argv[])
 							waiting_iphdr= (iphdr*)(waiting_packet->payload + sizeof(ethhdr));
 							DIE(!waiting_iphdr, "Couldn't get IP header of waiting packet!");
 
-							if (get_entry(route_table.rtable, route_table.rtable_len, waiting_iphdr->daddr).next_hop == arp_hdr->spa) {
+							if (get_best_route_rtable(route_table, waiting_iphdr->daddr).next_hop == arp_hdr->spa) {
 								forward(waiting_packet, waiting_ethhdr, waiting_iphdr, route_table, arp_table);
 							} else {
 								queue_enq(tmp_queue, waiting_packet);
