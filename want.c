@@ -6,8 +6,9 @@
 #include <string.h>
 
 typedef enum {
-	FALSE,
-	TRUE
+	FAILURE = -1,
+	FALSE = 0,
+	TRUE = 1
 } bool;
 
 // Strings are equal
@@ -37,8 +38,8 @@ if(strcmp(alloc_type, "malloc") == STRING_EQ) {											\
 	DIE_NEW(TRUE, "Couldn't allocate pointer due to unrecognized alloc type!");			\
 }																						\
 
-#define MAX_ENTRIES 1<<17
-#define MAX_ARP_CACHE 1<<7
+#define MAX_ENTRIES 1L<<17
+#define MAX_ARP_CACHE 1L	<<7
 
 typedef struct route_table_entry route_table_entry;
 typedef route_table_entry RTE;
@@ -74,7 +75,7 @@ static inline int cmp_fct_sort(const void *a, const void *b) {
 }
 
 // Create and return the routing table
-RT_STRUCT get_rtable(char* argv_1) {
+static inline RT_STRUCT get_rtable(char* argv_1) {
 	RT_STRUCT route_table = {NULL, 0};
 	SAFE_ALLOC(&route_table.rtable, "calloc", MAX_ENTRIES, sizeof(RTE));
 	route_table.rtable_len = read_rtable(argv_1, route_table.rtable);
@@ -82,90 +83,89 @@ RT_STRUCT get_rtable(char* argv_1) {
 }
 
 // Create and return the ARP table
-ARP_STRUCT get_arptable() {
+static inline ARP_STRUCT get_arptable() {
 	ARP_STRUCT arp_table = {NULL, 0};
 	SAFE_ALLOC(&arp_table.arp_table, "calloc", MAX_ARP_CACHE, sizeof(ARPE));
 	return arp_table;
 }
 
-uint16_t incremental_internet_checksum(uint16_t old_checksum, uint16_t old_v, uint16_t new_v){
-    return old_checksum - ~old_v - new_v;
+// Increase checksum
+static inline uint16_t add1_checksum(uint16_t checksum, int16_t ttl)
+{
+	int add = -(ttl - ~ttl);
+	return (uint16_t) checksum + add;
 }
 
-ARPE *get_arp_entry(uint32_t ip, ARPE *arp_table, int n) {
+// Check new checksum is correct
+static inline int validate_checksum(iphdr *ip_hdr) {
+	uint32_t start = ip_hdr->check;
+    ip_hdr->check = 0;
+    ip_hdr->check = ip_checksum((uint8_t*) ip_hdr, sizeof(iphdr));
+    
+    if (start == ip_hdr->check) {
+        return TRUE;
+    } else {
+		return FALSE;
+	}
+}
+
+// Get best route for arp table
+static inline ARPE *get_best_route_arp(uint32_t ip, ARP_STRUCT arp_table)
+{
     ARPE *entry = NULL;
-
-    int i;
-
-    for (i = 0; i < n; i++) {
-    	if (arp_table[i].ip == ip) {
-            entry = &arp_table[i];
+    for (int i = 0; i < arp_table.arp_table_len; ++i) {
+    	if (arp_table.arp_table[i].ip == ip) {
+            entry = &arp_table.arp_table[i];
             break;
         }
     }
     return entry;
 }
 
-int validate_checksum(iphdr *ip_hdr) {
-	uint32_t old_check = ip_hdr->check;
-    ip_hdr->check = 0;
-    ip_hdr->check = ip_checksum((uint8_t *)ip_hdr, sizeof(iphdr));
-    
-    if (old_check != ip_hdr->check) {
-        return 0;
-    }
-    return 1;
+// Gest best route for rtable
+static inline RTE* get_best_route(uint32_t dest_ip, RT_STRUCT rtable) {
+	RTE *bc = NULL;
+	for (int i = 0; i < rtable.rtable_len; ++i) {
+		if ((rtable.rtable[i].mask & dest_ip) == rtable.rtable[i].prefix) {
+			if (bc == NULL) {
+				bc = &rtable.rtable[i];
+			}
+			else if(ntohl(bc->mask) < ntohl(rtable.rtable[i].mask)) {
+				bc = &rtable.rtable[i];
+			} 
+		}
+	}
+	return bc;
 }
 
-void get_entry_binary(RTE *rtable, uint32_t ip, int low, int high, int* found){
-    if(high < low) return;
-    int mid = (low + high) / 2;
-    uint32_t prefix = ip & rtable[mid].mask;
-    if(prefix == rtable[mid].prefix) {
-        (*found) = mid;
-    }
-    if(rtable[mid].prefix > prefix) get_entry_binary(rtable, ip, mid + 1, high, found);
-    else get_entry_binary(rtable, ip, low, mid - 1, found);
-}
+// Forward package
+static inline int forward(packet *message, ethhdr *eth_hdr, iphdr *ip_hdr, RT_STRUCT rtable, ARP_STRUCT arp_table)
+{
+	RTE* entry = get_best_route(ip_hdr->daddr, rtable);
 
-RTE get_entry(RTE *rtable, int nr, uint32_t ip) {
-    RTE ret;
-    ret.mask = 0;
-    int res = -1;
-    get_entry_binary(rtable, ip, 0, nr - 1, &res);
-    if(res != -1) ret = rtable[res];
-	return ret;
-}
-
-int trimite_mai_departe(packet *m, RTE *rtable, int n, ARPE *arp_table, int narp, 
-	ethhdr *eth_hdr, iphdr *ip_hdr) {
-	// Longest prefix match
-	RTE entry = get_entry(rtable, n, ip_hdr->daddr);
-
-	if (entry.mask == 0) {
-		return 0;
+	if ((*entry).mask == 0) {
+		return FAILURE;
+	} else {
+		message->interface = entry->interface;
 	}
 
-	// Se cauta in arp cache mac-ul pentru next hop
-	ARPE *arp_entry = get_arp_entry(entry.next_hop, arp_table, narp);
-
+	// Get MAC for next hop
+	ARPE *arp_entry = get_best_route_arp((*entry).next_hop, arp_table);
 	if (arp_entry == NULL) {
-		return -1;
+		return FAILURE;
 	}
 
-	// rescrierea adrese din ethernet header
-    memcpy(eth_hdr->ether_dhost, arp_entry->mac, ETH_ALEN);
-	get_interface_mac(entry.interface, eth_hdr->ether_shost);
+	// Change the address in the header
+    memmove(eth_hdr->ether_dhost, arp_entry->mac, ETH_ALEN);
+	get_interface_mac(entry->interface, eth_hdr->ether_shost);
 
-	// update la ttl si la checksum
-	ip_hdr->ttl--;
-	ip_hdr->check = incremental_internet_checksum(ip_hdr->check, ip_hdr->ttl, ip_hdr->ttl);
+	--ip_hdr->ttl;
+	ip_hdr->check = ip_hdr->check - ~ip_hdr->ttl - ip_hdr->ttl;
 
-	// trimiterea packetului
-	m->interface = entry.interface;
-	send_packet(m);
+	// Send packet
+	send_packet(message);
 
-	return 1;
+	return TRUE;
 }
 
 // Send ICMP
@@ -213,15 +213,16 @@ static inline void send_icmp(int interface, ethhdr * eth_hdr, iphdr * ip_hdr,
     send_packet(&icmp_packet);
 }
 
-void create_arp_request(packet * m, RTE * entry){
+// Create an ARP request
+static inline void create_arp_request(packet * message, RTE * entry){
     char *broad = "ff:ff:ff:ff:ff:ff";
 	char *tha = "00:00:00:00:00:00";
 
-    m->interface = entry->interface;
-    m->len = sizeof(ethhdr) + sizeof(arphdr);
+    message->interface = entry->interface;
+    message->len = sizeof(ethhdr) + sizeof(arphdr);
 
-    ethhdr *eth_hdr = (ethhdr *)m->payload;
-    arphdr *arp_hdr = (arphdr *)(m->payload + sizeof(ethhdr));
+    ethhdr *eth_hdr = (ethhdr *)message->payload;
+    arphdr *arp_hdr = (arphdr *)(message->payload + sizeof(ethhdr));
 
     // Completez arp header
     arp_hdr->htype = htons(ARPHRD_ETHER);
@@ -248,13 +249,14 @@ void create_arp_request(packet * m, RTE * entry){
     hwaddr_aton(broad, eth_hdr->ether_dhost);
 }
 
-void create_arp_reply(packet * m, ethhdr * eth_hdr, arphdr * arp_hdr){
+// Create an ARP reply
+static inline void create_arp_reply(packet * message, ethhdr * eth_hdr, arphdr * arp_hdr){
     uint32_t spa = arp_hdr->spa;
     uint32_t tpa = arp_hdr->tpa;
     arp_hdr->tpa = spa;
     arp_hdr->spa = tpa;
     memcpy(arp_hdr->tha, arp_hdr->sha, sizeof( arp_hdr->sha));
-    get_interface_mac(m->interface, arp_hdr->sha);
+    get_interface_mac(message->interface, arp_hdr->sha);
     
     arp_hdr->op = htons(ARPOP_REPLY);
 
@@ -277,12 +279,6 @@ int main(int argc, char *argv[])
 	iphdr* ip_hdr = NULL;
 	arphdr* arp_hdr = NULL;
 	icmphdr* icmp_hdr = NULL;
-	iphdr* ip_hdr_waiting = NULL;
-	packet* aux = NULL;
-	RTE entry;
-	packet* waiting_packet = NULL;
-	ip_hdr_waiting;
-	ethhdr* eth_hdr_waiting = NULL;
 
 	// Packet queue
 	queue my_queue = queue_create();
@@ -343,8 +339,7 @@ int main(int argc, char *argv[])
 						continue;
 					}
 				} else {
-					int code = trimite_mai_departe(&message, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr, ip_hdr);
-
+					int code = forward(&message, eth_hdr, ip_hdr, route_table, arp_table);
 					// Daca forward a esuat cu codul 0 -> trimit ICMP Destination unreachable
 					if (code == 0) {
 						// Completarea header si trimitere ICMP
@@ -358,16 +353,14 @@ int main(int argc, char *argv[])
 						memcpy(aux, &message, sizeof(packet));
 						queue_enq(my_queue, aux);
 						// Generez arp request
-						RTE entry = get_entry(route_table.rtable, route_table.rtable_len, ip_hdr->daddr);
+						RTE* entry = get_best_route(ip_hdr->daddr, route_table);
 						packet p;
-						create_arp_request(&p, &entry);
+						create_arp_request(&p, entry);
 						send_packet(&p);
 						continue;
 					}
 					continue;
 				}
-				break;
-
 			// ARP
 			case ETHERTYPE_ARP:
 				arp_hdr = (arphdr *)(message.payload + sizeof(ethhdr));
@@ -386,16 +379,20 @@ int main(int argc, char *argv[])
 					arp_hdr = (arphdr *)(message.payload + sizeof(ethhdr));
 					queue aux_q = queue_create();
 
+					packet * waiting_packet;
+					iphdr* ip_hdr_waiting;
+					ethhdr *eth_hdr_waiting;
+
 					// Se cauta pachetele in coada
 					while (!queue_empty(my_queue)) {
 						waiting_packet = (packet *)queue_deq(my_queue);
 
 						eth_hdr_waiting = (ethhdr *)waiting_packet->payload;
-						ip_hdr_waiting= (iphdr*)(waiting_packet->payload + sizeof(ethhdr));
+						ip_hdr_waiting = (iphdr*)(waiting_packet->payload + sizeof(ethhdr));
 
-						if (get_entry(route_table.rtable, route_table.rtable_len, ip_hdr_waiting->daddr).next_hop == arp_hdr->spa) {
+						if (get_best_route(ip_hdr_waiting->daddr, route_table)->next_hop == arp_hdr->spa) {
 							// E Pachetul care il astepta -> trimite-l
-							trimite_mai_departe(waiting_packet, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr_waiting, ip_hdr_waiting);
+							forward(waiting_packet, eth_hdr_waiting, ip_hdr_waiting, route_table, arp_table);
 							// Pachetul care era adaugat in coada era alocat dinamic, deci il dezaloc
 						}
 						else {
@@ -406,12 +403,12 @@ int main(int argc, char *argv[])
 					// Reconstruiesc coada
 					my_queue = aux_q;
 				}
-				break;
+
 			default:
 				DIE(TRUE, "HEADER UNRECOGNIZED! ONLY IP AND ARP IMPLEMENTED!");
 				break;
 		}
-	} while(TRUE);
+	} while (TRUE);
 
 	return 0;
 }

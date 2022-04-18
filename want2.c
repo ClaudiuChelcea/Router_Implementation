@@ -6,8 +6,9 @@
 #include <string.h>
 
 typedef enum {
-	FALSE,
-	TRUE
+	FAILURE = -1,
+	FALSE = 0,
+	TRUE = 1
 } bool;
 
 // Strings are equal
@@ -39,6 +40,7 @@ if(strcmp(alloc_type, "malloc") == STRING_EQ) {											\
 
 #define MAX_ENTRIES 1<<17
 #define MAX_ARP_CACHE 1<<7
+#define MAC_LEN 6
 
 typedef struct route_table_entry route_table_entry;
 typedef route_table_entry RTE;
@@ -137,35 +139,64 @@ RTE get_entry(RTE *rtable, int nr, uint32_t ip) {
 	return ret;
 }
 
-int trimite_mai_departe(packet *m, RTE *rtable, int n, ARPE *arp_table, int narp, 
-	ethhdr *eth_hdr, iphdr *ip_hdr) {
-	// Longest prefix match
-	RTE entry = get_entry(rtable, n, ip_hdr->daddr);
+// Get best route for arp table
+static inline ARPE *get_best_route_arp(uint32_t ip, ARP_STRUCT arp_table)
+{
+    ARPE *entry = NULL;
+    for (int i = 0; i < arp_table.arp_table_len; ++i) {
+    	if (arp_table.arp_table[i].ip == ip) {
+            entry = &arp_table.arp_table[i];
+            break;
+        }
+    }
+    return entry;
+}
 
-	if (entry.mask == 0) {
-		return 0;
+
+// Gest best route for rtable
+static inline RTE* get_best_route(uint32_t dest_ip, RT_STRUCT rtable) {
+	RTE *bc = NULL;
+	for (int i = 0; i < rtable.rtable_len; ++i) {
+		if ((rtable.rtable[i].mask & dest_ip) == rtable.rtable[i].prefix) {
+			if (bc == NULL) {
+				bc = &rtable.rtable[i];
+			}
+			else if(ntohl(bc->mask) < ntohl(rtable.rtable[i].mask)) {
+				bc = &rtable.rtable[i];
+			} 
+		}
+	}
+	return bc;
+}
+
+// Forward package
+static inline int forward(packet *message, ethhdr *eth_hdr, iphdr *ip_hdr, RT_STRUCT rtable, ARP_STRUCT arp_table)
+{
+	RTE* entry = get_best_route(ip_hdr->daddr, rtable);
+
+	if ((*entry).mask == 0) {
+		return FALSE;
+	} else {
+		message->interface = entry->interface;
 	}
 
-	// Se cauta in arp cache mac-ul pentru next hop
-	ARPE *arp_entry = get_arp_entry(entry.next_hop, arp_table, narp);
-
+	// Get MAC for next hop
+	ARPE *arp_entry = get_best_route_arp((*entry).next_hop, arp_table);
 	if (arp_entry == NULL) {
-		return -1;
+		return FAILURE;
 	}
 
-	// rescrierea adrese din ethernet header
-    memcpy(eth_hdr->ether_dhost, arp_entry->mac, ETH_ALEN);
-	get_interface_mac(entry.interface, eth_hdr->ether_shost);
+	// Change the address in the header
+    memmove(eth_hdr->ether_dhost, arp_entry->mac, ETH_ALEN);
+	get_interface_mac(entry->interface, eth_hdr->ether_shost);
 
-	// update la ttl si la checksum
-	ip_hdr->ttl--;
-	ip_hdr->check = incremental_internet_checksum(ip_hdr->check, ip_hdr->ttl, ip_hdr->ttl);
+	--ip_hdr->ttl;
+	ip_hdr->check = ip_hdr->check - ~ip_hdr->ttl - ip_hdr->ttl;
 
-	// trimiterea packetului
-	m->interface = entry.interface;
-	send_packet(m);
+	// Send packet
+	send_packet(message);
 
-	return 1;
+	return TRUE;
 }
 
 // Send ICMP
@@ -277,12 +308,14 @@ int main(int argc, char *argv[])
 	iphdr* ip_hdr = NULL;
 	arphdr* arp_hdr = NULL;
 	icmphdr* icmp_hdr = NULL;
-	iphdr* ip_hdr_waiting = NULL;
-	packet* aux = NULL;
-	RTE entry;
+	iphdr* waiting_iphdr = NULL;
+	packet* tmp = NULL;
 	packet* waiting_packet = NULL;
-	ip_hdr_waiting;
-	ethhdr* eth_hdr_waiting = NULL;
+	waiting_iphdr;
+	ethhdr* waiting_ethhdr = NULL;
+	RTE* entry = NULL;
+	queue tmp_queue;
+	packet packet_arp_request;
 
 	// Packet queue
 	queue my_queue = queue_create();
@@ -296,6 +329,7 @@ int main(int argc, char *argv[])
 		
 		// Get ethernet header
 		ethhdr *eth_hdr = (ethhdr *) message.payload;
+		DIE(!eth_hdr, "Coulnd't get ethernet header!");
 
 		// Check if packet is for me
 		uint8_t mac[6];
@@ -333,8 +367,7 @@ int main(int argc, char *argv[])
 				}
 				
 				// Check if we are tHe destination, otherwise forward the packet
-				if (inet_addr(get_interface_ip(message.interface)) == ip_hdr->daddr && ip_hdr->protocol == 1) {
-					
+				if (inet_addr(get_interface_ip(message.interface)) == ip_hdr->daddr && ip_hdr->protocol == 1) {					
 					// Get ICMP header
 					icmp_hdr = (icmphdr *)(message.payload + sizeof(ethhdr) + sizeof(iphdr));
 					DIE(!icmp_hdr, "Coulnd't get ICMP header!");
@@ -343,25 +376,22 @@ int main(int argc, char *argv[])
 						continue;
 					}
 				} else {
-					int code = trimite_mai_departe(&message, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr, ip_hdr);
-
-					// Daca forward a esuat cu codul 0 -> trimit ICMP Destination unreachable
-					if (code == 0) {
-						// Completarea header si trimitere ICMP
+					int forward_ans = forward(&message, eth_hdr, ip_hdr, route_table, arp_table);
+					if (forward_ans == FALSE) {
 						send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
 						continue;
-					}
-					// Daca forward a esuat cu -1 -> salvez pachetul in coada si creez un ARP Request
-					else if (code == -1) {
-						// Adaug packetul in coada
-						packet *aux = (packet *)calloc(1, sizeof(packet));
-						memcpy(aux, &message, sizeof(packet));
-						queue_enq(my_queue, aux);
-						// Generez arp request
-						RTE entry = get_entry(route_table.rtable, route_table.rtable_len, ip_hdr->daddr);
-						packet p;
-						create_arp_request(&p, &entry);
-						send_packet(&p);
+					} else { // Save it to queue
+						SAFE_ALLOC(&tmp, "calloc", 1, sizeof(packet));
+						DIE(!tmp, "Couldn't queue packet!");
+						
+						memcpy(tmp, &message, sizeof(packet));
+						queue_enq(my_queue, tmp);
+						
+						// Create ARP request
+						entry = get_best_route(ip_hdr->daddr, route_table);
+						DIE(!entry, "Couldn't find route!");
+						create_arp_request(&packet_arp_request, entry);
+						send_packet(&packet_arp_request);
 						continue;
 					}
 					continue;
@@ -370,43 +400,60 @@ int main(int argc, char *argv[])
 
 			// ARP
 			case ETHERTYPE_ARP:
+				// Get header
 				arp_hdr = (arphdr *)(message.payload + sizeof(ethhdr));
-				// Deoarece e ARP salvez datele necesare in cache
+				DIE(!arp_hdr, "Couldn't get arp header!");
+
+				// Save in cache
 				arp_table.arp_table[arp_table.arp_table_len].ip = arp_hdr->spa;
-				memcpy(arp_table.arp_table[arp_table.arp_table_len].mac, arp_hdr->sha, 6);
-				arp_table.arp_table_len++;
-				if (ntohs(arp_hdr->op) == ARPOP_REQUEST) {
-					// Am primit arp request -> creez arp reply
-					create_arp_reply(&message, eth_hdr, arp_hdr);
-					send_packet(&message);
-					continue;
-				}
-				else if (ntohs(arp_hdr->op) == ARPOP_REPLY) {
-					// Am primit arp reply -> trimit pachetele care il asteptau
-					arp_hdr = (arphdr *)(message.payload + sizeof(ethhdr));
-					queue aux_q = queue_create();
+				memcpy(arp_table.arp_table[arp_table.arp_table_len++].mac, arp_hdr->sha, MAC_LEN);
 
-					// Se cauta pachetele in coada
-					while (!queue_empty(my_queue)) {
-						waiting_packet = (packet *)queue_deq(my_queue);
+				// Decide if we have an request or reply
+				switch(ntohs(arp_hdr->op)) {
+					// If request, we reply
+					case ARPOP_REQUEST:
+						create_arp_reply(&message, eth_hdr, arp_hdr);
+						send_packet(&message);
+						continue;
+						break;
 
-						eth_hdr_waiting = (ethhdr *)waiting_packet->payload;
-						ip_hdr_waiting= (iphdr*)(waiting_packet->payload + sizeof(ethhdr));
+					// If reply, send waiting packets
+					case ARPOP_REPLY:
+						// Create queue of packets
+						tmp_queue = queue_create();
+						DIE(!tmp_queue, "Couldn't create auxiliary queue!");
+							
+						// Get packets
+						while (queue_empty(my_queue) == FALSE) {
+							// Get packet
+							waiting_packet = (packet *) queue_deq(my_queue);
+							DIE(!waiting_packet, "Couldn't get waiting packet!");
 
-						if (get_entry(route_table.rtable, route_table.rtable_len, ip_hdr_waiting->daddr).next_hop == arp_hdr->spa) {
-							// E Pachetul care il astepta -> trimite-l
-							trimite_mai_departe(waiting_packet, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr_waiting, ip_hdr_waiting);
-							// Pachetul care era adaugat in coada era alocat dinamic, deci il dezaloc
+							// Get ethernet header
+							waiting_ethhdr = (ethhdr *)waiting_packet->payload;
+							DIE(!waiting_ethhdr, "Couldn't get ethernet header of waiting packet!");
+							
+							// Get IP header
+							waiting_iphdr= (iphdr*)(waiting_packet->payload + sizeof(ethhdr));
+							DIE(!waiting_iphdr, "Couldn't get IP header of waiting packet!");
+
+							if (get_best_route(waiting_iphdr->daddr, route_table)->next_hop == arp_hdr->spa) {
+								forward(waiting_packet, waiting_ethhdr, waiting_iphdr, route_table, arp_table);
+							} else {
+								queue_enq(tmp_queue, waiting_packet);
+							}
 						}
-						else {
-							// Daca nu e pachetul necesar -> il pun in coada auxiliara
-							queue_enq(aux_q, waiting_packet);
-						}
+						
+						// Get the unsent packages back
+						my_queue = tmp_queue;
+						break;
+
+					default:
+						DIE(TRUE, "Not request nor reply!");
+						break;
 					}
-					// Reconstruiesc coada
-					my_queue = aux_q;
-				}
 				break;
+
 			default:
 				DIE(TRUE, "HEADER UNRECOGNIZED! ONLY IP AND ARP IMPLEMENTED!");
 				break;

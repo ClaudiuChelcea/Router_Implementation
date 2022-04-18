@@ -1,2 +1,2 @@
-[(router.c:411)]: HEADER UNRECOGNIZED! ONLY IP AND ARP IMPLEMENTED!
-Success
+[(skel.c:32)]: read
+Network is down
