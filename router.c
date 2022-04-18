@@ -394,7 +394,6 @@ int main(int argc, char *argv[])
 					int forward_ans = trimite_mai_departe(&message, route_table.rtable, route_table.rtable_len, arp_table.arp_table, arp_table.arp_table_len, eth_hdr, ip_hdr);
 					if (forward_ans == FALSE) {
 						send_icmp(message.interface, eth_hdr, ip_hdr, ICMP_DEST_UNREACH, ICMP_NET_UNREACH);
-						continue;
 					} else if(forward_ans == FAILURE) { // Save it to queue
 						SAFE_ALLOC(&tmp, "calloc", 1, sizeof(packet));
 						DIE(!tmp, "Couldn't queue packet!");
@@ -406,10 +405,9 @@ int main(int argc, char *argv[])
 						arp_entry = get_entry(route_table.rtable, route_table.rtable_len, ip_hdr->daddr);
 						create_arp_request(&packet_arp_request, &arp_entry);
 						send_packet(&packet_arp_request);
-						continue;
 					}
 					
-					// In the end, continue
+					// In the end, always continue
 					continue;
 				}
 				break;
